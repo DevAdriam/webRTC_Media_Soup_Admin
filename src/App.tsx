@@ -13,6 +13,9 @@ interface StreamData {
 
 function App() {
   const [streams, setStreams] = useState<StreamData[]>([]);
+  const [audioStreams, setAudioStreams] = useState<{
+    [key: string]: MediaStream;
+  }>({});
   const [videoStreams, setVideoStreams] = useState<{
     [key: string]: MediaStream;
   }>({});
@@ -26,25 +29,23 @@ function App() {
   useEffect(() => {
     async function initDevice() {
       if (device) return;
-
       const newDevice = new Device();
-      socket.emit("getRouterRtpCapabilities", async (rtpCapabilities: any) => {
-        try {
-          await newDevice.load({ routerRtpCapabilities: rtpCapabilities });
-          setDevice(newDevice);
-          console.log("✅ Mediasoup Device Loaded : ", newDevice);
 
-          socket.emit("getProducers", async (producers: StreamData[]) => {
-            for (const producer of producers) {
-              await consumeStream(producer.producerId, producer.userId);
-            }
-          });
-        } catch (error) {
-          console.error("❌ Error loading Mediasoup Device:", error);
+      socket.emit(
+        "getRouterRtpCapabilities",
+        {},
+        async (rtpCapabilitiesString: any) => {
+          try {
+            const rtpCapabilities = rtpCapabilitiesString;
+            await newDevice.load({ routerRtpCapabilities: rtpCapabilities });
+            setDevice(newDevice);
+            console.log("✅ Mediasoup Device Loaded : ", newDevice);
+          } catch (error) {
+            console.error("❌ Error loading Mediasoup Device:", error);
+          }
         }
-      });
+      );
     }
-
     initDevice();
 
     socket.on("newStream", async (data: StreamData) => {
@@ -77,7 +78,6 @@ function App() {
   }
 
   async function consumeStream(producerId: string, userId: string) {
-    console.log(device);
     if (!device) {
       console.error("❌ Device not initialized yet");
       return;
@@ -89,7 +89,8 @@ function App() {
     socket.emit(
       "createTransport",
       { type: "recv" },
-      async (transportOptions: any) => {
+      async (transportOptionsString: any) => {
+        const transportOptions = transportOptionsString;
         if (!transportOptions || !transportOptions.id) {
           console.error("❌ Failed to get transport options from server");
           return;
@@ -121,16 +122,22 @@ function App() {
           }
         );
 
+        // [1, 2].map((item) => {
         socket.emit(
           "consume",
           { transportId: transportOptions.id, producerId },
-          async (consumerOptions: any) => {
+          async (consumerOptions: {
+            id: string;
+            producerId: string;
+            kind: "video" | "audio";
+            rtpParameters: any;
+          }) => {
             if (!consumerOptions || !consumerOptions.id) {
               console.error("❌ Failed to get consumer options");
               return;
             }
 
-            console.log("🎥 Consume response received:", consumerOptions);
+            console.warn("🎥 Consume response received:", consumerOptions);
             const consumer: Consumer = await recvTransport.consume(
               consumerOptions
             );
@@ -140,16 +147,13 @@ function App() {
               return;
             }
 
-            console.log(`🎬 Adding video track for user ${userId}`);
-            consumer.track.enabled = true;
-
+            // Create a new MediaStream
             const stream = new MediaStream();
             stream.addTrack(consumer.track);
 
-            setVideoStreams((prev) => {
-              console.log("Setting video streams");
-              return { ...prev, [userId]: stream };
-            });
+            consumerOptions.kind === "video"
+              ? setVideoStreams((prev) => ({ ...prev, [userId]: stream }))
+              : setAudioStreams((prev) => ({ ...prev, [userId]: stream }));
 
             setRecvTransports((prev) => {
               const newMap = new Map(prev);
@@ -158,9 +162,10 @@ function App() {
             });
 
             setForceRender((prev) => !prev);
-            console.log(`✅ Video stream added for user: ${userId}`);
+            console.log(`✅ Stream added for user: ${userId}`);
           }
         );
+        // });
       }
     );
   }
@@ -170,6 +175,12 @@ function App() {
     socket.emit("stopStream", { userId });
 
     setVideoStreams((prev) => {
+      const updatedStreams = { ...prev };
+      delete updatedStreams[userId];
+      return updatedStreams;
+    });
+
+    setAudioStreams((prev) => {
       const updatedStreams = { ...prev };
       delete updatedStreams[userId];
       return updatedStreams;
@@ -185,28 +196,84 @@ function App() {
   }
 
   useEffect(() => {
-    console.log({ videoStreams });
-
     Object.entries(videoStreams).forEach(([userId, stream]) => {
-      const videoElement = videoRefs.current[userId];
+      console.error({
+        videostream: {
+          userId,
+          stream,
+        },
+      });
+      if (!stream) {
+        console.warn(`⚠️ No valid stream for user ${userId}`);
+        return;
+      }
+      let videoElement = videoRefs.current[userId];
 
-      if (videoElement && stream) {
-        if (videoElement.srcObject !== stream) {
-          console.log(
-            `🎬 Attaching stream to video element for user ${userId}`
-          );
-          videoElement.srcObject = stream;
+      if (!videoElement) {
+        console.error(`❌ No video element found for user ${userId}`);
+        return;
+      }
+
+      if (videoElement.srcObject !== stream) {
+        console.log(`🎬 Attaching stream to video element for user ${userId}`);
+        videoElement.srcObject = stream;
+        videoElement.muted = false;
+        videoElement.autoplay = true;
+        videoElement.controls = true;
+      }
+
+      if (stream.getVideoTracks().length > 0) {
+        const videoTrack = stream.getVideoTracks()[0];
+
+        if (!videoTrack.enabled) {
+          console.log("video track is not enabled");
+        } else {
+          videoTrack.enabled = true;
         }
 
+        console.warn("Playing video");
         videoElement
           .play()
-          .catch((err) => console.error("🔴 Video play error:", err));
+          .catch((err) =>
+            console.error(`🔴 Video play error for user ${userId}:`, err)
+          );
       }
     });
-  }, [videoStreams, forceRender]);
+  }, [videoStreams, audioStreams, forceRender]);
+
+  useEffect(() => {
+    Object.entries(audioStreams).forEach(([userId, stream]) => {
+      console.error({
+        audioStream: {
+          userId,
+          stream,
+        },
+      });
+      if (stream.getAudioTracks().length > 0) {
+        const audioElementId = userId;
+        let audioElement = document.getElementById(
+          audioElementId
+        ) as HTMLAudioElement;
+
+        if (!audioElement) {
+          console.log(`🎤 Creating new audio element for user ${userId}`);
+          audioElement = document.createElement("audio");
+          audioElement.id = audioElementId;
+          audioElement.autoplay = true;
+          audioElement.controls = false;
+          document.body.appendChild(audioElement);
+        }
+
+        if (audioElement.srcObject !== stream) {
+          console.log(`🔊 Attaching audio stream for user ${userId}`);
+          audioElement.srcObject = stream;
+        }
+      }
+    });
+  }, [audioStreams, forceRender]);
 
   return (
-    <div className="min-h-screen min-w-screen bg-gray-900 text-white p-5">
+    <div className="min-w-screen min-h-screen bg-gray-900 text-white p-5">
       <h2 className="text-2xl font-bold text-center mb-5">📡 Live Streams</h2>
 
       <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-5">
@@ -215,7 +282,7 @@ function App() {
             <p className="text-lg font-semibold">🎥 User: {userId}</p>
             <video
               ref={(el) => (videoRefs.current[userId] = el)}
-              autoPlay
+              autoPlay={false}
               controls
               className="w-full h-56 bg-black rounded-md shadow-md"
             />

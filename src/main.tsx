@@ -5,8 +5,8 @@ import App from "./App.tsx";
 import Working from "./working.tsx";
 
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
+  <>
     <App />
     {/* <Working /> */}
-  </StrictMode>
+  </>
 );
