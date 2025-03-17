@@ -51,9 +51,8 @@ function App() {
     socket.on("newStream", async (data: StreamData) => {
       console.log(`📡 New stream received:`, data);
       setStreams((prev) => [...prev, data]);
-
       await waitForDevice();
-      consumeStream(data.producerId, data.userId);
+      await consumeStream(data.producerId, data.userId);
     });
 
     socket.on("streamStopped", ({ userId }) => {
@@ -64,6 +63,27 @@ function App() {
       socket.off("newStream");
       socket.off("streamStopped");
     };
+  }, [device]);
+
+  // Fetch the currently active producers
+  useEffect(() => {
+    async function fetchActiveProducers() {
+      await waitForDevice(); // Ensure the device is loaded
+      socket.emit(
+        "getActiveProducers",
+        {},
+        async (activeProducers: StreamData[]) => {
+          console.log("📡 Active producers fetched:", activeProducers);
+          setStreams(activeProducers);
+
+          for (const producer of activeProducers) {
+            await consumeStream(producer.producerId, producer.userId);
+          }
+        }
+      );
+    }
+
+    fetchActiveProducers(); // Fetch when component mounts
   }, [device]);
 
   async function waitForDevice() {
@@ -77,6 +97,7 @@ function App() {
     });
   }
 
+  // Consume a stream for a producer
   async function consumeStream(producerId: string, userId: string) {
     if (!device) {
       console.error("❌ Device not initialized yet");
@@ -86,6 +107,13 @@ function App() {
     console.log(
       `📥 Requesting consumer transport for producerId: ${producerId}`
     );
+
+    // Check if the user already has a transport to prevent re-creating the transport
+    if (recvTransports.has(userId)) {
+      console.log(`❌ User ${userId} is already consuming a stream`);
+      return; // Don't consume the stream again if already active
+    }
+
     socket.emit(
       "createTransport",
       { type: "recv" },
@@ -122,7 +150,6 @@ function App() {
           }
         );
 
-        // [1, 2].map((item) => {
         socket.emit(
           "consume",
           { transportId: transportOptions.id, producerId },
@@ -147,7 +174,6 @@ function App() {
               return;
             }
 
-            // Create a new MediaStream
             const stream = new MediaStream();
             stream.addTrack(consumer.track);
 
@@ -165,11 +191,11 @@ function App() {
             console.log(`✅ Stream added for user: ${userId}`);
           }
         );
-        // });
       }
     );
   }
 
+  // Stop a user's stream
   function stopUserStream(userId: string) {
     console.log(`🛑 Stopping stream for user: ${userId}`);
     socket.emit("stopStream", { userId });
@@ -195,14 +221,9 @@ function App() {
     setForceRender((prev) => !prev);
   }
 
+  // Render video streams
   useEffect(() => {
     Object.entries(videoStreams).forEach(([userId, stream]) => {
-      console.error({
-        videostream: {
-          userId,
-          stream,
-        },
-      });
       if (!stream) {
         console.warn(`⚠️ No valid stream for user ${userId}`);
         return;
@@ -231,7 +252,6 @@ function App() {
           videoTrack.enabled = true;
         }
 
-        console.warn("Playing video");
         videoElement
           .play()
           .catch((err) =>
@@ -239,16 +259,11 @@ function App() {
           );
       }
     });
-  }, [videoStreams, audioStreams, forceRender]);
+  }, [videoStreams, forceRender]);
 
+  // Render audio streams
   useEffect(() => {
     Object.entries(audioStreams).forEach(([userId, stream]) => {
-      console.error({
-        audioStream: {
-          userId,
-          stream,
-        },
-      });
       if (stream.getAudioTracks().length > 0) {
         const audioElementId = userId;
         let audioElement = document.getElementById(
